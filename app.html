@@ -394,7 +394,7 @@ function renderNow(){
   var title=S.settings.title||"Budget Control Room";
   root.innerHTML='<div class="app"><aside class="side"><div class="brand">'+esc(title)+'<small>Budget Control Room</small></div>'+
     '<div class="who">'+(S.settings.name?"Hi, "+esc(S.settings.name):"")+'</div><nav class="nav">'+nav+'</nav>'+
-    '<div class="foot">'+(storageOK?'Saved on this device · works offline':'<b>Saving is blocked in this browser.</b> Use Settings → Download backup.')+'<br>Last backup: <b>'+(S.meta.lastBackup?new Date(S.meta.lastBackup).toLocaleDateString():"never")+'</b></div></aside>'+
+    '<div class="foot">'+(storageOK?'Saved on this device · works offline':'<b>Saving is blocked in this browser.</b> Use Settings → Download backup.')+'<br>Last backup export request: <b>'+(S.meta.lastBackup?new Date(S.meta.lastBackup).toLocaleDateString():"never")+'</b></div></aside>'+
     '<main class="main" id="main"></main></div>'+tabbar();
   var m=$("#main");
   var html=banners();
@@ -584,10 +584,10 @@ function vSettings(){
    '<label class="f">Safety buffer (kept out of safe to spend)<input type="text" inputmode="decimal" autocomplete="off" data-set="buffer" value="'+(st.buffer||"")+'"></label>'+
    '<label class="f">Theme<select data-set="theme"><option value="auto"'+(st.theme==="auto"?" selected":"")+'>Match my device</option><option value="light"'+(st.theme==="light"?" selected":"")+'>Light</option><option value="dark"'+(st.theme==="dark"?" selected":"")+'>Dark</option></select></label>'+
    '</div></div>'+
-   '<div class="card"><h2>Backup &amp; your data</h2><p class="small muted" style="margin-top:0">Your budget is saved automatically in this browser. It is not sent anywhere. Download a backup now and then — it is the only copy if you clear your browser data, and it lets you move to another computer.</p>'+
+   '<div class="card"><h2>Backup &amp; your data</h2><p class="small muted" style="margin-top:0">Your budget is saved automatically in this browser. It is not sent anywhere. Download a backup now and then — it is the only copy if you clear your browser data, and it lets you move to another computer. After exporting, check that the file was saved. The export time does not confirm a saved file.</p>'+
    '<div class="row"><button class="btn pri" data-act="backup">Download backup</button><button class="btn" data-act="restore">Restore from backup</button><input type="file" id="restoreFile" accept=".json,application/json,text/plain" hidden></div>'+
    '<div class="row" style="margin-top:10px"><button class="btn" data-act="csv">Export transactions (CSV)</button></div>'+
-   '<p class="small muted">Last backup: <b>'+(S.meta.lastBackup?new Date(S.meta.lastBackup).toLocaleString():"never")+'</b></p>'+
+   '<p class="small muted">Last backup export request: <b>'+(S.meta.lastBackup?new Date(S.meta.lastBackup).toLocaleString():"never")+'</b></p>'+
    '<h2 style="margin-top:18px">Start over</h2><div class="row"><button class="btn" data-act="loadExample">Load example numbers</button><button class="btn danger" data-act="wipe">Erase everything</button></div>'+
    '<p class="small faint" style="margin-top:14px">Budget Control Room v'+APP_VERSION+' · ControlRoomStudio · A planning tool, not financial advice.</p></div></div>'+
    '<div class="card flush" style="margin-top:16px"><div style="padding:16px 18px 6px" class="row"><h2 style="margin:0">Categories</h2><span class="spacer"></span><button class="btn sm" data-act="addCat">+ Add category</button></div><table><thead><tr><th>Name</th><th>Group</th><th></th></tr></thead><tbody>'+cats+'</tbody></table></div>';
@@ -705,15 +705,34 @@ function setupModal(){
 }
 /* ---------- backup ---------- */
 function download(name,text,type){
-  try{var touch=window.matchMedia&&window.matchMedia("(pointer:coarse)").matches;
-    if(touch&&window.File&&navigator.canShare){var file=new File([text],name,{type:type});if(navigator.canShare({files:[file]})){navigator.share({files:[file],title:name}).catch(function(){});return;}}}catch(e){}
-  var b=new Blob([text],{type:type});var a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=name;document.body.appendChild(a);a.click();setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},500);
+  try{
+    var touch=window.matchMedia&&window.matchMedia("(pointer:coarse)").matches;
+    if(touch&&window.File&&navigator.canShare){
+      var file=new File([text],name,{type:type});
+      if(navigator.canShare({files:[file]}))return Promise.resolve(navigator.share({files:[file],title:name})).then(function(){return "shared";},function(e){return e&&e.name==="AbortError"?"cancelled":"failed";});
+    }
+    var b=new Blob([text],{type:type});var a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=name;document.body.appendChild(a);
+    try{a.click();}finally{setTimeout(function(){URL.revokeObjectURL(a.href);a.remove();},1000);}
+    return Promise.resolve("started");
+  }catch(e){return Promise.resolve(e&&e.name==="AbortError"?"cancelled":"failed");}
 }
-function backup(){S.meta.lastBackup=Date.now();save();download("budget-control-room-backup-"+todayIso()+".json",JSON.stringify({app:"BudgetControlRoom",version:1,exported:new Date().toISOString(),data:S},null,1),"application/json");render();toast("Backup downloaded");}
+function exportNotice(result,label){
+  if(result==="cancelled")toast(label+" cancelled. No new export recorded.");
+  else if(result==="failed")toast(label+" could not be exported. Please try again.");
+  else if(result==="shared")toast(label+" shared. Check that you saved the file.");
+  else toast(label+" download requested. Check your Downloads folder.");
+}
+function backup(){
+  var current=S, requested=Date.now();
+  return download("budget-control-room-backup-"+todayIso()+".json",JSON.stringify({app:"BudgetControlRoom",version:1,exported:new Date(requested).toISOString(),data:S},null,1),"application/json").then(function(result){
+    if((result==="started"||result==="shared")&&S===current){S.meta.lastBackup=requested;save();render();}
+    exportNotice(result,"Backup");return result;
+  });
+}
 function csv(){
   var rows=[["Date","Type","Category","Note","Amount"]];
   S.tx.slice().sort(function(a,b){return a.date<b.date?-1:1;}).forEach(function(t){rows.push([t.date,t.type,t.type==="income"?"Income":catName(t.cat),t.note||"",(t.type==="income"?"":"-")+(+t.amount).toFixed(2)]);});
-  download("budget-transactions-"+todayIso()+".csv",rows.map(function(r){return r.map(function(c){c=String(c);return /[",\n]/.test(c)?'"'+c.replace(/"/g,'""')+'"':c;}).join(",");}).join("\r\n"),"text/csv");toast("CSV exported");
+  return download("budget-transactions-"+todayIso()+".csv",rows.map(function(r){return r.map(function(c){c=String(c);return /[",\n]/.test(c)?'"'+c.replace(/"/g,'""')+'"':c;}).join(",");}).join("\r\n"),"text/csv").then(function(result){exportNotice(result,"CSV");return result;});
 }
 function validBackup(d){
   function obj(x){return x!==null&&typeof x==="object"&&!Array.isArray(x);}
