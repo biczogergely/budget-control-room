@@ -715,11 +715,39 @@ function csv(){
   S.tx.slice().sort(function(a,b){return a.date<b.date?-1:1;}).forEach(function(t){rows.push([t.date,t.type,t.type==="income"?"Income":catName(t.cat),t.note||"",(t.type==="income"?"":"-")+(+t.amount).toFixed(2)]);});
   download("budget-transactions-"+todayIso()+".csv",rows.map(function(r){return r.map(function(c){c=String(c);return /[",\n]/.test(c)?'"'+c.replace(/"/g,'""')+'"':c;}).join(",");}).join("\r\n"),"text/csv");toast("CSV exported");
 }
+function validBackup(d){
+  function obj(x){return x!==null&&typeof x==="object"&&!Array.isArray(x);}
+  function finite(x){return typeof x==="number"&&isFinite(x);}
+  function date(x){return typeof x==="string"&&/^\d{4}-\d{2}-\d{2}$/.test(x)&&iso(parse(x))===x;}
+  if(!obj(d)||!obj(d.settings)||!Array.isArray(d.tx))return false;
+  if(["meta","balance","debtPlan"].some(function(k){return d[k]!==undefined&&!obj(d[k]);}))return false;
+  var ok=["tx","bills","goals","debts","categories"].every(function(k){
+    if(d[k]===undefined)return k!=="tx";
+    if(!Array.isArray(d[k]))return false;
+    var ids={};
+    return d[k].every(function(x){
+      if(!obj(x)||typeof x.id!=="string"||!x.id||Object.prototype.hasOwnProperty.call(ids,x.id))return false;
+      ids[x.id]=true;
+      if(["amount","created","target","saved","balance","apr","min","planned","day"].some(function(f){return x[f]!==undefined&&!finite(x[f]);}))return false;
+      if(["name","note","cat","group","src"].some(function(f){return x[f]!=null&&typeof x[f]!=="string";}))return false;
+      if(k==="tx")return date(x.date)&&["income","expense"].indexOf(x.type)>=0&&finite(x.amount)&&x.amount>=0&&finite(x.created);
+      if(k==="bills")return typeof x.name==="string"&&finite(x.amount)&&x.amount>=0&&date(x.next)&&["weekly","biweekly","monthly","quarterly","yearly","once"].indexOf(x.freq)>=0;
+      if(k==="goals")return typeof x.name==="string"&&finite(x.target)&&x.target>0&&finite(x.saved)&&(!x.date||date(x.date));
+      if(k==="debts")return typeof x.name==="string"&&finite(x.balance)&&finite(x.apr)&&finite(x.min);
+      return typeof x.name==="string"&&typeof x.group==="string"&&finite(x.planned);
+    });
+  });
+  if(!ok)return false;
+  if(["buffer","monthlyIncome","payDayA","payDayB","payAnchor"].some(function(k){return d.settings[k]!==undefined&&!finite(d.settings[k]);}))return false;
+  if(d.settings.nextPayday&&!date(d.settings.nextPayday))return false;
+  if(d.balance&&((d.balance.amount!==undefined&&!finite(d.balance.amount))||(d.balance.setAt!==undefined&&!finite(d.balance.setAt))||(d.balance.asOf!==undefined&&!date(d.balance.asOf))))return false;
+  return true;
+}
 function restoreFile(file){
   var r=new FileReader();
-  r.onload=function(){try{var o=JSON.parse(r.result);var d=o&&o.data?o.data:o;if(!d||!Array.isArray(d.tx)||!d.settings)throw new Error("x");
+  r.onload=function(){try{var o=JSON.parse(r.result);var d=o&&o.data?o.data:o;if((o.app&&o.app!=="BudgetControlRoom")||(o.version&&o.version!==1)||!validBackup(d))throw new Error("x");
       var apply=function(){S=migrate(d);S.meta.example=false;save();closeModal();view="today";render();toast("Backup restored");};
-      if(S&&!S.meta.example&&S.tx.length)confirmBox("Replace your current budget?","Restoring replaces everything in this browser with the backup from "+(o.exported?new Date(o.exported).toLocaleDateString():"the file")+".","Replace",apply,true);else apply();
+      if(S&&!S.meta.example)confirmBox("Replace your current budget?","Restoring replaces everything in this browser with the backup from "+(o.exported?new Date(o.exported).toLocaleDateString():"the file")+".","Replace",apply,true);else apply();
     }catch(e){toast("That file is not a Budget Control Room backup");}};
   r.readAsText(file);
 }
